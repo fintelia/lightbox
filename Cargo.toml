@@ -1,0 +1,21 @@
+[package]
+name = "lightbox"
+version = "0.1.0"
+authors = ["Jonathan Behrens <fintelia@gmail.com>"]
+
+[dependencies]
+failure = "0.1.1"
+gfx = "0.17.1"
+gfx_core = "0.8.0"
+gfx_device_gl = "0.15.2"
+glutin = { git = "https://github.com/fintelia/glutin" }
+image = { git = "https://github.com/PistonDevelopers/image" }
+obj = "0.8.2"
+gfx_shader_watch = "0.4.0"
+
+# For preview
+[dev-dependencies]
+camera_controllers = "0.23"
+
+[features]
+viewer = []
