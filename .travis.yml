@@ -5,4 +5,4 @@ rust:
 cache: cargo
 script:
   - cargo check --all
-  - cargo test --verbose
+  - xvfb-run cargo test --verbose
