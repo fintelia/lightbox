@@ -24,7 +24,7 @@ use gfx_core::handle::{Buffer, DepthStencilView, RenderTargetView};
 use gfx_shader_watch::PsoCell;
 use image::RgbaImage;
 use obj::{Obj, SimplePolygon};
-use glutin::{Api, GlContext, GlProfile, GlRequest, HeadlessContext, HeadlessRendererBuilder};
+use glutin::{Api, GlContext, GlProfile, GlRequest, HeadlessRendererBuilder};
 use failure::Error;
 
 gfx_defines!{
@@ -110,7 +110,6 @@ where
     width: u16,
     height: u16,
 
-    _context: HeadlessContext,
     device: D,
     factory: F,
 
@@ -170,7 +169,6 @@ impl
         Ok(Self {
             width,
             height,
-            _context: context,
             device,
             factory,
             encoder,
@@ -185,10 +183,52 @@ impl
 impl<R, F, C, D> Lightbox<R, F, C, D>
 where
     R: Resources,
-    F: Factory<R>,
+    F: Factory<R> + Clone + 'static,
     C: CommandBuffer<R>,
     D: Device<Resources = R, CommandBuffer = C>,
 {
+    pub fn new(
+        width: u16,
+        height: u16,
+        device: D,
+        mut factory: F,
+        encoder: Encoder<R, C>,
+    ) -> Result<Self, Error> {
+        let depth_target = factory.create_depth_stencil(width, height)?.2;
+
+        let color_texture = factory.create_texture(
+            Kind::D2(width, height, AaMode::Single),
+            1,
+            Bind::SHADER_RESOURCE | Bind::RENDER_TARGET | Bind::TRANSFER_SRC,
+            Usage::Data,
+            Some(ChannelType::Srgb),
+        )?;
+        let color_target = factory.view_texture_as_render_target(&color_texture, 0, None)?;
+
+        let pso_cell = Box::new(debug_watcher_pso_cell!(
+            pipe = pipe,
+            vertex_shader = "shader/vert.glsl",
+            fragment_shader = "shader/frag.glsl",
+            factory = factory.clone(),
+            primitive = Primitive::TriangleList,
+            raterizer = Rasterizer::new_fill()
+        ).map_err(|e| failure::err_msg(format!("{}", e)))?);
+
+        let download_buffer =
+            factory.create_download_buffer::<u8>(4 * width as usize * height as usize)?;
+
+        Ok(Self {
+            width,
+            height,
+            device,
+            factory,
+            encoder,
+            pso_cell,
+            download_buffer,
+            color_target,
+            depth_target,
+        })
+    }
     pub fn capture(
         &mut self,
         model: &Model<R>,
