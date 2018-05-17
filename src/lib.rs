@@ -12,7 +12,8 @@ extern crate gfx;
 #[macro_use]
 extern crate gfx_shader_watch;
 
-use gfx::{Encoder, Factory as GfxFactory, IndexBuffer, Primitive, Slice};
+use gfx::{CommandBuffer, Device, Encoder, Factory, Factory as GfxFactory, IndexBuffer, Primitive,
+          Resources, Slice};
 use gfx::traits::FactoryExt;
 use gfx::state::Rasterizer;
 use gfx::texture::{AaMode, Kind};
@@ -20,7 +21,6 @@ use gfx::memory::{Bind, Usage};
 use gfx_core::memory::Typed;
 use gfx_core::format::{ChannelType, DepthStencil, Formatted, Srgba8};
 use gfx_core::handle::{Buffer, DepthStencilView, RenderTargetView};
-use gfx_device_gl::{CommandBuffer, Device, Factory, Resources};
 use gfx_shader_watch::PsoCell;
 use image::RgbaImage;
 use obj::{Obj, SimplePolygon};
@@ -43,12 +43,20 @@ gfx_pipeline!( pipe {
     depth: gfx::DepthTarget<DepthStencil> = gfx::preset::depth::PASS_WRITE,
 });
 
-pub struct Model {
-    slice: Slice<Resources>,
-    data: pipe::Data<Resources>,
+pub struct Model<R: Resources> {
+    slice: Slice<R>,
+    data: pipe::Data<R>,
 }
-impl Model {
-    pub fn from_obj<'a>(lightbox: &mut Lightbox, mut model: Obj<'a, SimplePolygon>) -> Self {
+impl<R: Resources> Model<R> {
+    pub fn from_obj<'a, F, C, D>(
+        lightbox: &mut Lightbox<R, F, C, D>,
+        mut model: Obj<'a, SimplePolygon>,
+    ) -> Self
+    where
+        F: Factory<R>,
+        C: CommandBuffer<R>,
+        D: Device<Resources = R, CommandBuffer = C>,
+    {
         if model.normal.is_empty() {
             model.normal.push([0.0, 0.0, 0.0]);
         }
@@ -92,24 +100,37 @@ impl Model {
     }
 }
 
-pub struct Lightbox {
+pub struct Lightbox<R, F, C, D>
+where
+    R: Resources,
+    F: Factory<R>,
+    C: CommandBuffer<R>,
+    D: Device<Resources = R, CommandBuffer = C>,
+{
     width: u16,
     height: u16,
 
     _context: HeadlessContext,
-    device: Device,
-    factory: Factory,
+    device: D,
+    factory: F,
 
-    encoder: Encoder<Resources, CommandBuffer>,
+    encoder: Encoder<R, C>,
 
-    download_buffer: Buffer<Resources, u8>,
+    download_buffer: Buffer<R, u8>,
 
-    pso_cell: Box<PsoCell<Resources, Factory, pipe::Init<'static>>>,
-    color_target: RenderTargetView<Resources, Srgba8>,
-    depth_target: DepthStencilView<Resources, DepthStencil>,
+    pso_cell: Box<PsoCell<R, F, pipe::Init<'static>>>,
+    color_target: RenderTargetView<R, Srgba8>,
+    depth_target: DepthStencilView<R, DepthStencil>,
 }
-impl Lightbox {
-    pub fn new(width: u16, height: u16) -> Result<Self, Error> {
+impl
+    Lightbox<
+        gfx_device_gl::Resources,
+        gfx_device_gl::Factory,
+        gfx_device_gl::CommandBuffer,
+        gfx_device_gl::Device,
+    >
+{
+    pub fn headless_gl(width: u16, height: u16) -> Result<Self, Error> {
         let context = HeadlessRendererBuilder::new(width as u32, height as u32)
             .with_gl(GlRequest::Specific(Api::OpenGl, (3, 2)))
             .with_gl_profile(GlProfile::Core)
@@ -159,10 +180,18 @@ impl Lightbox {
             depth_target,
         })
     }
+}
 
+impl<R, F, C, D> Lightbox<R, F, C, D>
+where
+    R: Resources,
+    F: Factory<R>,
+    C: CommandBuffer<R>,
+    D: Device<Resources = R, CommandBuffer = C>,
+{
     pub fn capture(
         &mut self,
-        model: &Model,
+        model: &Model<R>,
         model_view_projection: [[f32; 4]; 4],
     ) -> Result<RgbaImage, Error> {
         let mut data = model.data.clone();
@@ -204,7 +233,7 @@ mod tests {
 
     #[test]
     fn teapot() {
-        let mut lightbox = Lightbox::new(1024, 1024).unwrap();
+        let mut lightbox = Lightbox::headless_gl(1024, 1024).unwrap();
         let mut model: &[u8] = include_bytes!("../teapot.obj");
         let model = Obj::load_buf(&mut model).unwrap();
         let model = Model::from_obj(&mut lightbox, model);
@@ -218,7 +247,7 @@ mod tests {
 
         let render = lightbox.capture(&model, mvp_matrix).unwrap();
         assert_eq!(render.dimensions(), (1024, 1024));
-        render.save("teapot-test.png");
+        // render.save("teapot-test.png")?;
 
         let render = render.into_raw();
         let reference_render = image::load_from_memory(include_bytes!("../teapot.png")).unwrap();
