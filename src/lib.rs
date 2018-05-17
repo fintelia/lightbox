@@ -2,30 +2,31 @@
 
 extern crate failure;
 extern crate gfx_core;
-extern crate gfx_device_gl;
-extern crate glutin;
 extern crate image;
 extern crate obj;
+
+#[cfg(feature = "headless")]
+extern crate gfx_device_gl;
+#[cfg(feature = "headless")]
+extern crate glutin;
 
 #[macro_use]
 extern crate gfx;
 #[macro_use]
 extern crate gfx_shader_watch;
 
-use gfx::{CommandBuffer, Device, Encoder, Factory, Factory as GfxFactory, IndexBuffer, Primitive,
-          Resources, Slice};
-use gfx::traits::FactoryExt;
+use failure::Error;
+use gfx::memory::{Bind, Usage};
 use gfx::state::Rasterizer;
 use gfx::texture::{AaMode, Kind};
-use gfx::memory::{Bind, Usage};
-use gfx_core::memory::Typed;
+use gfx::traits::FactoryExt;
+use gfx::{CommandBuffer, Device, Encoder, Factory, IndexBuffer, Primitive, Resources, Slice};
 use gfx_core::format::{ChannelType, DepthStencil, Formatted, Srgba8};
 use gfx_core::handle::{Buffer, DepthStencilView, RenderTargetView};
+use gfx_core::memory::Typed;
 use gfx_shader_watch::PsoCell;
 use image::RgbaImage;
 use obj::{Obj, SimplePolygon};
-use glutin::{Api, GlContext, GlProfile, GlRequest, HeadlessRendererBuilder};
-use failure::Error;
 
 gfx_defines!{
     vertex Vertex {
@@ -48,15 +49,10 @@ pub struct Model<R: Resources> {
     data: pipe::Data<R>,
 }
 impl<R: Resources> Model<R> {
-    pub fn from_obj<'a, F, C, D>(
-        lightbox: &mut Lightbox<R, F, C, D>,
+    pub fn from_obj<'a, F: Factory<R>>(
+        lightbox: &mut Lightbox<R, F>,
         mut model: Obj<'a, SimplePolygon>,
-    ) -> Self
-    where
-        F: Factory<R>,
-        C: CommandBuffer<R>,
-        D: Device<Resources = R, CommandBuffer = C>,
-    {
+    ) -> Self {
         if model.normal.is_empty() {
             model.normal.push([0.0, 0.0, 0.0]);
         }
@@ -100,20 +96,15 @@ impl<R: Resources> Model<R> {
     }
 }
 
-pub struct Lightbox<R, F, C, D>
+pub struct Lightbox<R, F>
 where
     R: Resources,
     F: Factory<R>,
-    C: CommandBuffer<R>,
-    D: Device<Resources = R, CommandBuffer = C>,
 {
     width: u16,
     height: u16,
 
-    device: D,
     factory: F,
-
-    encoder: Encoder<R, C>,
 
     download_buffer: Buffer<R, u8>,
 
@@ -121,15 +112,22 @@ where
     color_target: RenderTargetView<R, Srgba8>,
     depth_target: DepthStencilView<R, DepthStencil>,
 }
-impl
-    Lightbox<
-        gfx_device_gl::Resources,
-        gfx_device_gl::Factory,
-        gfx_device_gl::CommandBuffer,
-        gfx_device_gl::Device,
-    >
-{
-    pub fn headless_gl(width: u16, height: u16) -> Result<Self, Error> {
+
+#[cfg(feature = "headless")]
+impl Lightbox<gfx_device_gl::Resources, gfx_device_gl::Factory> {
+    pub fn headless_gl(
+        width: u16,
+        height: u16,
+    ) -> Result<
+        (
+            Self,
+            Encoder<gfx_device_gl::Resources, gfx_device_gl::CommandBuffer>,
+            gfx_device_gl::Device,
+        ),
+        Error,
+    > {
+        use glutin::{Api, GlContext, GlProfile, GlRequest, HeadlessRendererBuilder};
+
         let context = HeadlessRendererBuilder::new(width as u32, height as u32)
             .with_gl(GlRequest::Specific(Api::OpenGl, (3, 2)))
             .with_gl_profile(GlProfile::Core)
@@ -166,34 +164,24 @@ impl
         let download_buffer =
             factory.create_download_buffer::<u8>(4 * width as usize * height as usize)?;
 
-        Ok(Self {
-            width,
-            height,
-            device,
-            factory,
+        Ok((
+            Self {
+                width,
+                height,
+                factory,
+                pso_cell,
+                download_buffer,
+                color_target,
+                depth_target,
+            },
             encoder,
-            pso_cell,
-            download_buffer,
-            color_target,
-            depth_target,
-        })
+            device,
+        ))
     }
 }
 
-impl<R, F, C, D> Lightbox<R, F, C, D>
-where
-    R: Resources,
-    F: Factory<R> + Clone + 'static,
-    C: CommandBuffer<R>,
-    D: Device<Resources = R, CommandBuffer = C>,
-{
-    pub fn new(
-        width: u16,
-        height: u16,
-        device: D,
-        mut factory: F,
-        encoder: Encoder<R, C>,
-    ) -> Result<Self, Error> {
+impl<R: Resources, F: Factory<R> + Clone + 'static> Lightbox<R, F> {
+    pub fn new(width: u16, height: u16, mut factory: F) -> Result<Self, Error> {
         let depth_target = factory.create_depth_stencil(width, height)?.2;
 
         let color_texture = factory.create_texture(
@@ -220,28 +208,28 @@ where
         Ok(Self {
             width,
             height,
-            device,
             factory,
-            encoder,
             pso_cell,
             download_buffer,
             color_target,
             depth_target,
         })
     }
-    pub fn capture(
+    pub fn capture<C: CommandBuffer<R>, D: Device<Resources = R, CommandBuffer = C>>(
         &mut self,
         model: &Model<R>,
         model_view_projection: [[f32; 4]; 4],
+        encoder: &mut Encoder<R, C>,
+        device: &mut D,
     ) -> Result<RgbaImage, Error> {
         let mut data = model.data.clone();
         data.model_view_projection = model_view_projection;
 
-        self.encoder.clear(&self.color_target, [0.0, 1.0, 0.0, 1.0]);
-        self.encoder.clear_depth(&self.depth_target, 1.0);
+        encoder.clear(&self.color_target, [0.0, 1.0, 0.0, 1.0]);
+        encoder.clear_depth(&self.depth_target, 1.0);
 
-        self.encoder.draw(&model.slice, self.pso_cell.pso(), &data);
-        self.encoder
+        encoder.draw(&model.slice, self.pso_cell.pso(), &data);
+        encoder
             .copy_texture_to_buffer_raw(
                 model.data.color.raw().get_texture(),
                 None,
@@ -259,7 +247,7 @@ where
                 0,
             )
             .map_err(|e| failure::err_msg(format!("{:?}", e)))?;
-        self.encoder.flush(&mut self.device);
+        encoder.flush(device);
 
         let data = self.factory.read_mapping(&self.download_buffer)?.to_vec();
         let image = RgbaImage::from_raw(self.width.into(), self.height.into(), data).unwrap();
@@ -273,7 +261,7 @@ mod tests {
 
     #[test]
     fn teapot() {
-        let mut lightbox = Lightbox::headless_gl(1024, 1024).unwrap();
+        let (mut lightbox, mut encoder, mut device) = Lightbox::headless_gl(1024, 1024).unwrap();
         let mut model: &[u8] = include_bytes!("../teapot.obj");
         let model = Obj::load_buf(&mut model).unwrap();
         let model = Model::from_obj(&mut lightbox, model);
@@ -285,7 +273,9 @@ mod tests {
             [0.0, 0.0, 0.0, 1.0],
         ];
 
-        let render = lightbox.capture(&model, mvp_matrix).unwrap();
+        let render = lightbox
+            .capture(&model, mvp_matrix, &mut encoder, &mut device)
+            .unwrap();
         assert_eq!(render.dimensions(), (1024, 1024));
         // render.save("teapot-test.png")?;
 
