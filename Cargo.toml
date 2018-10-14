@@ -7,17 +7,17 @@ authors = ["Jonathan Behrens <fintelia@gmail.com>"]
 failure = "0.1.1"
 gfx = "0.17.1"
 gfx_core = "0.8.0"
-image = { git = "https://github.com/PistonDevelopers/image" }
+image = "0.20.0"
 obj = "0.8.2"
 gfx_shader_watch = "0.4.0"
 
 # For headless
-gfx_device_gl = {version = "0.15.2", optional = true }
+gfx_device_gl = {version = "0.15.3", optional = true }
 glutin = { git = "https://github.com/fintelia/glutin", optional = true }
 
 # For preview
 [dev-dependencies]
-camera_controllers = "0.23"
+camera_controllers = "0.24.0"
 
 [features]
 headless = ["gfx_device_gl", "glutin"]
